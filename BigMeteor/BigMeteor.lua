@@ -435,7 +435,7 @@ end
 
 local function createUI()
   local frame = CreateFrame("Button", "BigMeteorFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(318, 184)
+  frame:SetSize(278, 174)
   frame:SetMovable(true)
   frame:EnableMouse(true)
   frame:RegisterForDrag("LeftButton")
@@ -466,8 +466,8 @@ local function createUI()
     updateTimers()
   end)
 
-  local leftColumn, leftStacks = createStackColumn(frame, "LEFT", frame, "LEFT", 16, 0)
-  local rightColumn, rightStacks = createStackColumn(frame, "LEFT", leftColumn, "RIGHT", 8, 0)
+  local leftColumn, leftStacks = createStackColumn(frame, "LEFT", frame, "LEFT", 12, 0)
+  local rightColumn, rightStacks = createStackColumn(frame, "LEFT", leftColumn, "RIGHT", 6, 0)
 
   local leftTime = leftColumn:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
   leftTime:SetPoint("CENTER", leftColumn, "CENTER", 0, 0)
@@ -493,8 +493,8 @@ local function createUI()
   local recommendations = {}
   for index = 1, 3 do
     local button = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    button:SetSize(118, 42)
-    button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -16, -20 - (index - 1) * 50)
+    button:SetSize(104, 40)
+    button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -12, -19 - (index - 1) * 47)
     button:SetBackdrop({
       bgFile = "Interface\\Buttons\\WHITE8X8",
       edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
@@ -505,12 +505,12 @@ local function createUI()
 
     local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 4, -4)
-    icon:SetSize(34, 34)
+    icon:SetSize(32, 32)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     button.icon = icon
 
     local text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    text:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    text:SetPoint("LEFT", icon, "RIGHT", 5, 0)
     text:SetPoint("RIGHT", button, "RIGHT", -6, 0)
     text:SetJustifyH("LEFT")
     text:SetText("")

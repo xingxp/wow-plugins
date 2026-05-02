@@ -1,0 +1,8 @@
+## Interface: 50503
+## Title: DK滚鼠标
+## Notes: 显示 DK 鼠标滚轮动作图标、冷却和符文能量。
+## Author: 王老狮@HC
+## Version: 0.1.0
+## SavedVariablesPerCharacter: DKGunShuBiaoDB
+
+DKGunShuBiao.lua

@@ -2,7 +2,7 @@
 ## Title: 好大的流星
 ## Notes: 毁灭术目标DOT、印记与混沌流星优先级监控。
 ## Author: 王老狮@HC
-## Version: 0.5.3
+## Version: 0.5.4
 ## SavedVariablesPerCharacter: BigMeteorDB
 
 BigMeteor.lua

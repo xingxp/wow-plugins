@@ -410,17 +410,42 @@ local function applyFrameSettings()
   ui.frame:SetAlpha(BigMeteorDB.alpha or 1)
 end
 
+local function addFlatBorder(frame, r, g, b, a)
+  local top = frame:CreateTexture(nil, "BORDER")
+  top:SetColorTexture(r, g, b, a)
+  top:SetPoint("TOPLEFT")
+  top:SetPoint("TOPRIGHT")
+  top:SetHeight(1)
+
+  local bottom = frame:CreateTexture(nil, "BORDER")
+  bottom:SetColorTexture(r, g, b, a)
+  bottom:SetPoint("BOTTOMLEFT")
+  bottom:SetPoint("BOTTOMRIGHT")
+  bottom:SetHeight(1)
+
+  local left = frame:CreateTexture(nil, "BORDER")
+  left:SetColorTexture(r, g, b, a)
+  left:SetPoint("TOPLEFT")
+  left:SetPoint("BOTTOMLEFT")
+  left:SetWidth(1)
+
+  local right = frame:CreateTexture(nil, "BORDER")
+  right:SetColorTexture(r, g, b, a)
+  right:SetPoint("TOPRIGHT")
+  right:SetPoint("BOTTOMRIGHT")
+  right:SetWidth(1)
+end
+
 local function createStackColumn(parent, anchorPoint, relativeTo, relativePoint, xOffset, yOffset)
   local frame = CreateFrame("Frame", nil, parent, "BackdropTemplate")
   frame:SetSize(60, 156)
   frame:SetPoint(anchorPoint, relativeTo, relativePoint, xOffset, yOffset)
   frame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize = 12,
-    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    insets = { left = 0, right = 0, top = 0, bottom = 0 },
   })
-  frame:SetBackdropColor(0.02, 0.02, 0.03, 0.9)
+  frame:SetBackdropColor(0.02, 0.02, 0.03, 0.72)
+  addFlatBorder(frame, 0.75, 0.78, 0.82, 0.85)
 
   local stacks = {}
   for index = 1, stackMax do
@@ -441,12 +466,11 @@ local function createUI()
   frame:RegisterForDrag("LeftButton")
   frame:SetClampedToScreen(true)
   frame:SetBackdrop({
-    bgFile = "Interface\\Tooltips\\UI-Tooltip-Background",
-    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-    edgeSize = 12,
-    insets = { left = 2, right = 2, top = 2, bottom = 2 },
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    insets = { left = 0, right = 0, top = 0, bottom = 0 },
   })
-  frame:SetBackdropColor(0.03, 0.03, 0.05, 0.7)
+  frame:SetBackdropColor(0.03, 0.03, 0.05, 0.55)
+  addFlatBorder(frame, 0.65, 0.68, 0.72, 0.55)
   frame:SetScript("OnDragStart", function(self)
     if BigMeteorDB.locked then
       return
@@ -497,11 +521,10 @@ local function createUI()
     button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -12, -19 - (index - 1) * 47)
     button:SetBackdrop({
       bgFile = "Interface\\Buttons\\WHITE8X8",
-      edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border",
-      edgeSize = 10,
-      insets = { left = 2, right = 2, top = 2, bottom = 2 },
+      insets = { left = 0, right = 0, top = 0, bottom = 0 },
     })
-    button:SetBackdropColor(0.02, 0.02, 0.03, 0.85)
+    button:SetBackdropColor(0.02, 0.02, 0.03, 0.68)
+    addFlatBorder(button, 0.42, 0.44, 0.48, 0.75)
 
     local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 4, -4)

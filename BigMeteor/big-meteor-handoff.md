@@ -63,7 +63,7 @@ big-meteor-handoff.md
 当前版本：
 
 ```text
-0.5.3
+0.5.4
 ```
 
 ## 当前行为

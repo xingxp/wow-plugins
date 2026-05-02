@@ -31,9 +31,11 @@ local defaults = {
   },
   dotAuraIDs = {
     immolate = 47811,
+    shadowflame = 61291,
   },
   dotAuraNames = {
     immolate = "献祭",
+    shadowflame = "暗影烈焰",
   },
 }
 
@@ -71,6 +73,7 @@ local state = {
   fireExpires = 0,
   shadowExpires = 0,
   immolateExpires = 0,
+  shadowflameExpires = 0,
   recommendations = {},
   debugLines = {},
 }
@@ -79,6 +82,9 @@ local ui = {}
 local stackMax = 6
 local burstWindowSeconds = 2.6
 local shadowburnStacks = 2
+local shadowflameFireStacks = 2
+local shadowflameShadowStacks = 2
+local shadowflameTickShadowStacks = 1
 
 local function copyDefaults(source, target)
   if type(source) ~= "table" then
@@ -250,24 +256,45 @@ local function buildRecommendations()
   end
 
   local shadowburnReady = isSpellReady(spellIDs.shadowburn)
+  local shadowflameReady = isSpellReady(spellIDs.shadowflame)
   local meteorReady = isSpellReady(spellIDs.meteor)
   local hasImmolate = getRemaining(state.immolateExpires) > 0
   local fireRemaining = getRemaining(state.fireExpires)
+  local shadowflameRemaining = getRemaining(state.shadowflameExpires)
   local immolateRefreshSeconds = getSpellCastSeconds(spellIDs.immolate, 1.5)
   local immolateRefreshNeeded = getRemaining(state.immolateExpires) <= immolateRefreshSeconds
+  local meteorCastSeconds = getSpellCastSeconds(spellIDs.meteor, 1.5)
   local fireReady = state.fireStacks >= stackMax
   local shadowReady = state.shadowStacks >= stackMax
+  local shadowReadyByMeteorImpact = state.shadowStacks + shadowflameTickShadowStacks >= stackMax
+    and shadowflameRemaining >= meteorCastSeconds
   local shadowburnCanFinish = fireReady and state.shadowStacks + shadowburnStacks >= stackMax
-  local burstReady = shadowburnReady and meteorReady and (fireReady and shadowReady or shadowburnCanFinish)
+  local shadowflameFireStacksAfter = math.min(stackMax, state.fireStacks + shadowflameFireStacks)
+  local shadowflameShadowStacksAfter = math.min(stackMax, state.shadowStacks + shadowflameShadowStacks)
+  local shadowflameCanSetUpMeteor = shadowflameReady
+    and meteorReady
+    and shadowflameFireStacksAfter >= stackMax
+    and shadowflameShadowStacksAfter >= stackMax
+  local meteorNowReady = fireReady and (shadowReady or shadowReadyByMeteorImpact) and meteorReady
+  local shadowburnSetupReady = shadowburnReady and meteorReady and shadowburnCanFinish
 
-  if immolateRefreshNeeded and (not burstReady or fireRemaining <= burstWindowSeconds) then
+  if immolateRefreshNeeded and (not (meteorNowReady or shadowburnSetupReady or shadowflameCanSetUpMeteor) or fireRemaining <= burstWindowSeconds) then
     addRecommendation(list, spellIDs.immolate)
   end
 
-  if burstReady then
-    if not shadowReady then
-      addRecommendation(list, spellIDs.shadowburn)
-    end
+  if meteorNowReady then
+    addRecommendation(list, spellIDs.meteor)
+    return list
+  end
+
+  if shadowburnSetupReady then
+    addRecommendation(list, spellIDs.shadowburn)
+    addRecommendation(list, spellIDs.meteor)
+    return list
+  end
+
+  if shadowflameCanSetUpMeteor then
+    addRecommendation(list, spellIDs.shadowflame)
     addRecommendation(list, spellIDs.meteor)
     return list
   end
@@ -377,6 +404,7 @@ local function refreshState()
     state.fireStacks, state.fireDuration, state.fireExpires = getTargetDebuffInfo("target", BigMeteorDB.auraIDs.fireMark, BigMeteorDB.auraNames.fireMark)
     state.shadowStacks, state.shadowDuration, state.shadowExpires = getTargetDebuffInfo("target", BigMeteorDB.auraIDs.shadowMark, BigMeteorDB.auraNames.shadowMark)
     _, _, state.immolateExpires = getTargetDebuffInfo("target", BigMeteorDB.dotAuraIDs.immolate, BigMeteorDB.dotAuraNames.immolate)
+    _, _, state.shadowflameExpires = getTargetDebuffInfo("target", BigMeteorDB.dotAuraIDs.shadowflame, BigMeteorDB.dotAuraNames.shadowflame)
     state.recommendations = buildRecommendations()
     state.debugLines = collectDebuffDebug("target")
   else
@@ -387,6 +415,7 @@ local function refreshState()
     state.fireExpires = 0
     state.shadowExpires = 0
     state.immolateExpires = 0
+    state.shadowflameExpires = 0
     state.recommendations = {}
     state.debugLines = {}
   end

@@ -1,6 +1,39 @@
 # DK滚鼠标 插件交接
 
-更新时间：2026-04-30
+更新时间：2026-05-02
+
+## 仓库与接手
+
+GitHub 仓库：
+
+```text
+https://github.com/xingxp/wow-plugins
+```
+
+新机器接手：
+
+```bash
+git clone https://github.com/xingxp/wow-plugins.git
+cd wow-plugins
+```
+
+插件源码目录：
+
+```text
+DKGunShuBiao
+```
+
+游戏内插件目录名必须保持：
+
+```text
+DKGunShuBiao
+```
+
+如果新机器 WoW 路径不同，把 `DKGunShuBiao/` 整个目录同步到该机器的：
+
+```text
+World of Warcraft/_classic_titan_/Interface/AddOns/DKGunShuBiao
+```
 
 ## 当前插件位置
 
@@ -9,6 +42,8 @@
 ```text
 /Volumes/DATA/blizzard/World of Warcraft/_classic_titan_/Interface/AddOns/DKGunShuBiao
 ```
+
+这是原开发机器路径；新机器可不同，以实际 WoW 安装目录为准。
 
 当前文件：
 
@@ -181,7 +216,7 @@ hook 覆盖面：
 ## Interface: 50503
 ## Title: DK滚鼠标
 ## Notes: 显示 DK 鼠标滚轮动作图标、冷却和符文能量。
-## Author: Codex
+## Author: 王老狮@HC
 ## Version: 0.1.0
 ## SavedVariablesPerCharacter: DKGunShuBiaoDB
 
@@ -200,8 +235,10 @@ DKGunShuBiao.lua
 每次修改后至少运行：
 
 ```bash
-lua -e 'assert(loadfile("/Volumes/DATA/blizzard/World of Warcraft/_classic_titan_/Interface/AddOns/DKGunShuBiao/DKGunShuBiao.lua"))'
+lua -e 'assert(loadfile("DKGunShuBiao/DKGunShuBiao.lua"))'
 ```
+
+同步到游戏目录后，也可以对游戏目录里的文件做同样校验。
 
 游戏内：
 
@@ -236,4 +273,3 @@ lua -e 'assert(loadfile("/Volumes/DATA/blizzard/World of Warcraft/_classic_titan
   - 三角形高度
   - 是否显示槽位编号
   - 是否显示数量
-

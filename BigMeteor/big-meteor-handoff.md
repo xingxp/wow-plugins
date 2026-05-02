@@ -1,6 +1,39 @@
 # 好大的流星 交接
 
-更新时间：2026-04-30
+更新时间：2026-05-02
+
+## 仓库与接手
+
+GitHub 仓库：
+
+```text
+https://github.com/xingxp/wow-plugins
+```
+
+新机器接手：
+
+```bash
+git clone https://github.com/xingxp/wow-plugins.git
+cd wow-plugins
+```
+
+插件源码目录：
+
+```text
+BigMeteor
+```
+
+游戏内插件目录名必须保持：
+
+```text
+BigMeteor
+```
+
+如果新机器 WoW 路径不同，把 `BigMeteor/` 整个目录同步到该机器的：
+
+```text
+World of Warcraft/_classic_titan_/Interface/AddOns/BigMeteor
+```
 
 ## 当前目标
 
@@ -24,6 +57,8 @@ big-meteor-handoff.md
 ```text
 /Users/wangxin/dev/wow-plugin/BigMeteor
 ```
+
+这是原开发机器路径；新机器路径不要求一致，以 clone 后的 `BigMeteor/` 为准。
 
 当前版本：
 
@@ -64,14 +99,13 @@ big-meteor-handoff.md
 ```text
 余烬印记（火）: 1295144
 暗影印记: 1295140
-暗影印记兼容ID: 17800
 ```
 
 当前版本不提供斜杠命令配置，按“开箱即用”方向维护。
 
 ## 推荐验证步骤
 
-1. 将工作空间内 `BigMeteor` 同步到游戏 `AddOns/BigMeteor`。
+1. 将仓库内 `BigMeteor` 同步到游戏 `AddOns/BigMeteor`。
 2. `/reload`
 3. 选中带有火/暗印记的目标
 4. 观察：
@@ -82,5 +116,10 @@ big-meteor-handoff.md
 ## 下一步待办
 
 1. 进游戏验证右侧推荐图标是否能按 CD 和当前层数正确变化。
-2. 按实战手感微调推荐优先级。
-3. 确认推荐稳定后删除下方临时 debuff 调试列表。
+2. 验证 `大流星` 文字槽是否足够醒目；如果 42px 图标槽太挤，改成更宽的文字条。
+3. 把暗影灼烧 + 混沌流星窗口从固定 `2.6s` 改成动态计算：
+   - 当前 GCD
+   - 混沌流星施法时间
+   - 当前急速
+4. 按实战手感微调推荐优先级。
+5. 确认推荐稳定后删除下方临时 debuff 调试列表。

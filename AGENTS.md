@@ -2,6 +2,22 @@
 
 本工作空间用于编写多个不同的魔兽世界插件，不同会话可能分别处理不同插件。
 
+## 仓库信息
+
+- GitHub 仓库：`https://github.com/xingxp/wow-plugins`
+- 默认分支：`main`
+- 新机器继续工作时，先 clone 这个仓库，再根据本机 WoW 安装路径同步对应插件目录。
+
+```bash
+git clone https://github.com/xingxp/wow-plugins.git
+cd wow-plugins
+```
+
+当前仓库内已有插件：
+
+- `BigMeteor`：好大的流星，毁灭术火/暗印记与大流星提示。
+- `DKGunShuBiao`：DK滚鼠标，显示鼠标滚轮触发的动作按钮。
+
 ## 会话接管规则
 
 - 进入工作空间后，先确认“当前会话正在处理哪个插件”。

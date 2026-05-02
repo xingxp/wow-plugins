@@ -78,13 +78,7 @@ local state = {
 local ui = {}
 local stackMax = 6
 local burstWindowSeconds = 2.6
-local bigMeteorRecommendation = {
-  kind = "text",
-  text = "大流星",
-  r = 1,
-  g = 0.42,
-  b = 0.08,
-}
+local shadowburnStacks = 2
 
 local function copyDefaults(source, target)
   if type(source) ~= "table" then
@@ -226,10 +220,6 @@ local function getSpellCastSeconds(spellID, fallback)
 end
 
 local function isRecommendationSame(left, right)
-  if type(left) == "table" or type(right) == "table" then
-    return left == right
-  end
-
   return left == right
 end
 
@@ -251,20 +241,6 @@ local function addRecommendation(list, spellID)
   list[#list + 1] = spellID
 end
 
-local function addTextRecommendation(list, recommendation)
-  if not recommendation or #list >= 3 then
-    return
-  end
-
-  for _, existing in ipairs(list) do
-    if isRecommendationSame(existing, recommendation) then
-      return
-    end
-  end
-
-  list[#list + 1] = recommendation
-end
-
 local function buildRecommendations()
   local spellIDs = BigMeteorDB.spellIDs
   local list = {}
@@ -281,7 +257,7 @@ local function buildRecommendations()
   local immolateRefreshNeeded = getRemaining(state.immolateExpires) <= immolateRefreshSeconds
   local fireReady = state.fireStacks >= stackMax
   local shadowReady = state.shadowStacks >= stackMax
-  local shadowburnCanFinish = fireReady and state.shadowStacks >= stackMax - 1
+  local shadowburnCanFinish = fireReady and state.shadowStacks + shadowburnStacks >= stackMax
   local burstReady = shadowburnReady and meteorReady and (fireReady and shadowReady or shadowburnCanFinish)
 
   if immolateRefreshNeeded and (not burstReady or fireRemaining <= burstWindowSeconds) then
@@ -289,7 +265,10 @@ local function buildRecommendations()
   end
 
   if burstReady then
-    addTextRecommendation(list, bigMeteorRecommendation)
+    if not shadowReady then
+      addRecommendation(list, spellIDs.shadowburn)
+    end
+    addRecommendation(list, spellIDs.meteor)
     return list
   end
 
@@ -368,16 +347,11 @@ local function updateBars()
     local recommendation = state.recommendations[index]
     local button = ui.recommendations[index]
 
-    if type(recommendation) == "table" then
-      button.icon:Hide()
-      button.text:SetText(recommendation.text or "")
-      button.text:SetTextColor(recommendation.r or 1, recommendation.g or 1, recommendation.b or 1)
-      button.text:Show()
-      button:Show()
-    elseif recommendation then
+    if recommendation then
       button.icon:SetTexture(GetSpellTexture(recommendation))
       button.icon:Show()
-      button.text:Hide()
+      button.text:SetText(GetSpellInfo(recommendation) or "")
+      button.text:Show()
       button:Show()
     else
       button:Hide()
@@ -461,7 +435,7 @@ end
 
 local function createUI()
   local frame = CreateFrame("Button", "BigMeteorFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(226, 184)
+  frame:SetSize(318, 184)
   frame:SetMovable(true)
   frame:EnableMouse(true)
   frame:RegisterForDrag("LeftButton")
@@ -519,7 +493,7 @@ local function createUI()
   local recommendations = {}
   for index = 1, 3 do
     local button = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    button:SetSize(42, 42)
+    button:SetSize(118, 42)
     button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -16, -20 - (index - 1) * 50)
     button:SetBackdrop({
       bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -531,14 +505,14 @@ local function createUI()
 
     local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 4, -4)
-    icon:SetPoint("BOTTOMRIGHT", -4, 4)
+    icon:SetSize(34, 34)
     icon:SetTexCoord(0.08, 0.92, 0.08, 0.92)
     button.icon = icon
 
     local text = button:CreateFontString(nil, "OVERLAY", "GameFontNormalLarge")
-    text:SetPoint("CENTER", button, "CENTER", 0, 0)
-    text:SetWidth(38)
-    text:SetJustifyH("CENTER")
+    text:SetPoint("LEFT", icon, "RIGHT", 6, 0)
+    text:SetPoint("RIGHT", button, "RIGHT", -6, 0)
+    text:SetJustifyH("LEFT")
     text:SetText("")
     text:Hide()
     button.text = text

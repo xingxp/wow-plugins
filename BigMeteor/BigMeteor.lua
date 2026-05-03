@@ -28,6 +28,8 @@ local defaults = {
     meteor = 1295386,
     chaosBolt = 59172,
     incinerate = 47838,
+    shadowBolt = 47809,
+    lifeTap = 57946,
   },
   dotAuraIDs = {
     immolate = 47811,
@@ -74,17 +76,39 @@ local state = {
   shadowExpires = 0,
   immolateExpires = 0,
   shadowflameExpires = 0,
+  lastShadowburnCast = 0,
+  shadowStacksAfterShadowburn = 0,
+  activeCastSpell = nil,
+  activeCastRecommended = nil,
+  activeCastMatched = false,
   recommendations = {},
   debugLines = {},
 }
 
 local ui = {}
 local stackMax = 6
-local burstWindowSeconds = 2.6
+local meteorChainPadding = 0.5
 local shadowburnStacks = 2
 local shadowflameFireStacks = 2
 local shadowflameShadowStacks = 2
 local shadowflameTickShadowStacks = 1
+local layout = {
+  gap = 7,
+  stackWidth = 34,
+  cooldownWidth = 34,
+  recommendationWidth = 102,
+  panelPadding = 10,
+  barHeight = 134,
+  recommendationHeight = 40,
+  recommendationGap = 7,
+  verticalBorders = 8,
+}
+layout.frameWidth = layout.panelPadding * 2
+  + layout.stackWidth * 2
+  + layout.cooldownWidth
+  + layout.recommendationWidth
+  + layout.gap * 3
+  + layout.verticalBorders
 
 local function copyDefaults(source, target)
   if type(source) ~= "table" then
@@ -126,6 +150,10 @@ local function normalizeCount(count)
   return 1
 end
 
+local function isPlayerAuraCaster(caster)
+  return caster == "player"
+end
+
 local function addAuraInfo(result, auraSpellID, auraName, count, duration, expires)
   result.stacks = math.max(result.stacks, normalizeCount(count))
 
@@ -152,12 +180,12 @@ local function getTargetDebuffInfo(unit, spellID, auraName)
   }
 
   for index = 1, 40 do
-    local name, _, count, _, duration, expires, _, _, _, auraSpellID = UnitAura(unit, index, "HARMFUL")
+    local name, _, count, _, duration, expires, caster, _, _, auraSpellID = UnitAura(unit, index, "HARMFUL")
     if not name then
       break
     end
 
-    if matchAura(auraSpellID, name, spellID, auraName) then
+    if isPlayerAuraCaster(caster) and matchAura(auraSpellID, name, spellID, auraName) then
       addAuraInfo(result, auraSpellID, name, count, duration, expires)
     end
   end
@@ -169,7 +197,7 @@ local function getTargetDebuffInfo(unit, spellID, auraName)
         break
       end
 
-      if matchAura(aura.spellId, aura.name, spellID, auraName) then
+      if isPlayerAuraCaster(aura.sourceUnit) and matchAura(aura.spellId, aura.name, spellID, auraName) then
         addAuraInfo(result, aura.spellId, aura.name, aura.applications or aura.charges, aura.duration, aura.expirationTime)
       end
     end
@@ -216,6 +244,19 @@ local function isSpellReady(spellID)
   return not start or start == 0 or not duration or duration <= 1.5
 end
 
+local function getSpellCooldownRemaining(spellID)
+  if not spellID or spellID == 0 then
+    return 0
+  end
+
+  local start, duration, enabled = GetSpellCooldown(spellID)
+  if enabled == 0 or not start or not duration or duration <= 1.5 then
+    return 0
+  end
+
+  return math.max(0, start + duration - GetTime())
+end
+
 local function getSpellCastSeconds(spellID, fallback)
   local castMS = select(4, GetSpellInfo(spellID))
   if castMS and castMS > 0 then
@@ -225,12 +266,22 @@ local function getSpellCastSeconds(spellID, fallback)
   return fallback or 1.5
 end
 
+local function getGCDSeconds()
+  local haste = UnitSpellHaste("player") or 0
+  return math.max(0.75, 1.5 / (1 + haste / 100))
+end
+
+local function isSpellInRange(spellID, unit)
+  local inRange = IsSpellInRange(GetSpellInfo(spellID), unit)
+  return inRange == nil or inRange == 1
+end
+
 local function isRecommendationSame(left, right)
   return left == right
 end
 
 local function addRecommendation(list, spellID)
-  if not spellID or spellID == 0 or #list >= 3 then
+  if not spellID or spellID == 0 or #list >= 2 then
     return
   end
 
@@ -247,6 +298,58 @@ local function addRecommendation(list, spellID)
   list[#list + 1] = spellID
 end
 
+local function getKnownSpellIDByName(spellName)
+  if not spellName or not BigMeteorDB or not BigMeteorDB.spellIDs then
+    return nil
+  end
+
+  for _, spellID in pairs(BigMeteorDB.spellIDs) do
+    if GetSpellInfo(spellID) == spellName then
+      return spellID
+    end
+  end
+
+  return nil
+end
+
+local function findKnownSpellIDInArgs(...)
+  if not BigMeteorDB or not BigMeteorDB.spellIDs then
+    return nil
+  end
+
+  for index = 1, select("#", ...) do
+    local value = select(index, ...)
+    if type(value) == "number" then
+      for _, spellID in pairs(BigMeteorDB.spellIDs) do
+        if value == spellID then
+          return spellID
+        end
+      end
+    elseif type(value) == "string" then
+      local spellID = getKnownSpellIDByName(value)
+      if spellID then
+        return spellID
+      end
+    end
+  end
+
+  return nil
+end
+
+local function getPlayerCastInfo()
+  local name, _, texture, startMS, endMS, _, _, _, spellID = UnitCastingInfo("player")
+  if name then
+    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000
+  end
+
+  name, _, texture, startMS, endMS, _, _, spellID = UnitChannelInfo("player")
+  if name then
+    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000
+  end
+
+  return nil, nil, 0, 0
+end
+
 local function buildRecommendations()
   local spellIDs = BigMeteorDB.spellIDs
   local list = {}
@@ -256,7 +359,11 @@ local function buildRecommendations()
   end
 
   local shadowburnReady = isSpellReady(spellIDs.shadowburn)
-  local shadowflameReady = isSpellReady(spellIDs.shadowflame)
+  local shadowburnRemaining = getSpellCooldownRemaining(spellIDs.shadowburn)
+  local conflagrateReady = isSpellReady(spellIDs.conflagrate)
+  local conflagrateRemaining = getSpellCooldownRemaining(spellIDs.conflagrate)
+  local shadowflameInRange = isSpellInRange(spellIDs.shadowflame, "target")
+  local shadowflameReady = isSpellReady(spellIDs.shadowflame) and shadowflameInRange
   local meteorReady = isSpellReady(spellIDs.meteor)
   local hasImmolate = getRemaining(state.immolateExpires) > 0
   local fireRemaining = getRemaining(state.fireExpires)
@@ -264,25 +371,43 @@ local function buildRecommendations()
   local immolateRefreshSeconds = getSpellCastSeconds(spellIDs.immolate, 1.5)
   local immolateRefreshNeeded = getRemaining(state.immolateExpires) <= immolateRefreshSeconds
   local meteorCastSeconds = getSpellCastSeconds(spellIDs.meteor, 1.5)
+  local gcdSeconds = getGCDSeconds()
+  local chaosBoltSeconds = getSpellCastSeconds(spellIDs.chaosBolt, 1.5)
+  local recentlyCastShadowburn = GetTime() - (state.lastShadowburnCast or 0) <= (meteorCastSeconds + gcdSeconds + meteorChainPadding)
+  local shadowStacksForMeteor = state.shadowStacks
+  if recentlyCastShadowburn then
+    shadowStacksForMeteor = math.max(shadowStacksForMeteor, state.shadowStacksAfterShadowburn or 0)
+  end
   local fireReady = state.fireStacks >= stackMax
-  local shadowReady = state.shadowStacks >= stackMax
-  local shadowReadyByMeteorImpact = state.shadowStacks + shadowflameTickShadowStacks >= stackMax
-    and shadowflameRemaining >= meteorCastSeconds
-  local shadowburnCanFinish = fireReady and state.shadowStacks + shadowburnStacks >= stackMax
+  local shadowReadyForMeteor = state.shadowStacks >= stackMax
+    or shadowStacksForMeteor >= stackMax
+    or shadowStacksForMeteor + shadowflameTickShadowStacks >= stackMax
+      and shadowflameRemaining >= meteorCastSeconds
+  local nearShadowburnMeteorWindow = fireReady
+    and meteorReady
+    and not shadowburnReady
+    and shadowburnRemaining > gcdSeconds
+    and shadowburnRemaining < chaosBoltSeconds
+    and (
+      state.shadowStacks + shadowburnStacks >= stackMax
+      or state.shadowStacks + shadowburnStacks + shadowflameTickShadowStacks >= stackMax
+        and shadowflameRemaining >= meteorCastSeconds
+    )
+  local shadowburnCanFinish = fireReady
+    and (
+      state.shadowStacks + shadowburnStacks >= stackMax
+      or state.shadowStacks + shadowburnStacks + shadowflameTickShadowStacks >= stackMax
+        and shadowflameRemaining >= meteorCastSeconds
+    )
   local shadowflameFireStacksAfter = math.min(stackMax, state.fireStacks + shadowflameFireStacks)
   local shadowflameShadowStacksAfter = math.min(stackMax, state.shadowStacks + shadowflameShadowStacks)
   local shadowflameCanSetUpMeteor = shadowflameReady
     and meteorReady
     and shadowflameFireStacksAfter >= stackMax
     and shadowflameShadowStacksAfter >= stackMax
-  local meteorNowReady = fireReady and (shadowReady or shadowReadyByMeteorImpact) and meteorReady
   local shadowburnSetupReady = shadowburnReady and meteorReady and shadowburnCanFinish
 
-  if immolateRefreshNeeded and (not (meteorNowReady or shadowburnSetupReady or shadowflameCanSetUpMeteor) or fireRemaining <= burstWindowSeconds) then
-    addRecommendation(list, spellIDs.immolate)
-  end
-
-  if meteorNowReady then
+  if recentlyCastShadowburn and fireReady and meteorReady and shadowReadyForMeteor then
     addRecommendation(list, spellIDs.meteor)
     return list
   end
@@ -293,29 +418,50 @@ local function buildRecommendations()
     return list
   end
 
+  if nearShadowburnMeteorWindow then
+    addRecommendation(list, spellIDs.lifeTap)
+    return list
+  end
+
+  if hasImmolate then
+    addRecommendation(list, spellIDs.conflagrate)
+    if conflagrateReady or conflagrateRemaining <= 0 or conflagrateRemaining > chaosBoltSeconds then
+      addRecommendation(list, spellIDs.chaosBolt)
+    end
+  else
+    addRecommendation(list, spellIDs.chaosBolt)
+  end
+
   if shadowflameCanSetUpMeteor then
     addRecommendation(list, spellIDs.shadowflame)
-    addRecommendation(list, spellIDs.meteor)
     return list
   end
 
   if state.shadowStacks < stackMax - 1 then
-    addRecommendation(list, spellIDs.shadowflame)
+    if shadowflameInRange then
+      addRecommendation(list, spellIDs.shadowflame)
+    else
+      addRecommendation(list, spellIDs.shadowBolt)
+    end
+  end
+
+  if immolateRefreshNeeded then
+    addRecommendation(list, spellIDs.immolate)
+    return list
   end
 
   if state.fireStacks < stackMax then
-    if hasImmolate then
-      addRecommendation(list, spellIDs.conflagrate)
-    end
-    addRecommendation(list, spellIDs.chaosBolt)
     addRecommendation(list, spellIDs.incinerate)
   end
 
   if state.shadowStacks < stackMax then
-    addRecommendation(list, spellIDs.shadowflame)
+    if shadowflameInRange then
+      addRecommendation(list, spellIDs.shadowflame)
+    else
+      addRecommendation(list, spellIDs.shadowBolt)
+    end
   end
 
-  addRecommendation(list, spellIDs.chaosBolt)
   addRecommendation(list, spellIDs.incinerate)
 
   return list
@@ -334,15 +480,15 @@ local function collectDebuffDebug(unit)
       local name = aura.name or "?"
       local auraSpellID = aura.spellId or 0
       local count = aura.applications or aura.charges or 0
-      lines[#lines + 1] = ("%d:%s x%d"):format(auraSpellID, name, count)
+      lines[#lines + 1] = ("%d:%s x%d %s"):format(auraSpellID, name, count, aura.sourceUnit or "?")
     end
   else
     for index = 1, 12 do
-      local name, _, _, count, _, _, _, _, _, debuffSpellID = UnitDebuff(unit, index)
+      local name, _, _, count, _, _, caster, _, _, debuffSpellID = UnitDebuff(unit, index)
       if not name then
         break
       end
-      lines[#lines + 1] = ("%d:%s x%d"):format(debuffSpellID or 0, name, count or 0)
+      lines[#lines + 1] = ("%d:%s x%d %s"):format(debuffSpellID or 0, name, count or 0, caster or "?")
     end
   end
 
@@ -370,15 +516,73 @@ local function updateBars()
 
   ui.leftTime:SetText(formatRemaining(state.fireExpires))
   ui.rightTime:SetText(formatRemaining(state.shadowExpires))
-  for index = 1, 3 do
-    local recommendation = state.recommendations[index]
+
+  local start, duration, enabled = GetSpellCooldown(BigMeteorDB.spellIDs.shadowburn)
+  if enabled ~= 0 and start and duration and duration > 1.5 then
+    local remaining = math.max(0, start + duration - GetTime())
+    ui.shadowburnCooldownFill:SetHeight((remaining / duration) * layout.barHeight)
+    ui.shadowburnCooldownText:SetText(formatRemaining(start + duration))
+  else
+    ui.shadowburnCooldownFill:SetHeight(0)
+    ui.shadowburnCooldownText:SetText("")
+  end
+
+  local activeSpellID, activeTexture, castStart, castEnd = getPlayerCastInfo()
+  local activeCastProgress = 0
+  if activeSpellID and castEnd > castStart then
+    activeCastProgress = math.min(1, math.max(0, (GetTime() - castStart) / (castEnd - castStart)))
+  end
+
+  local display = {}
+  if activeSpellID then
+    display[1] = {
+      spellID = activeSpellID,
+      texture = activeTexture,
+      active = true,
+      matched = state.activeCastMatched,
+      progress = activeCastProgress,
+    }
+
+    for _, recommendation in ipairs(state.recommendations) do
+      if recommendation ~= activeSpellID then
+        display[2] = {
+          spellID = recommendation,
+          active = false,
+        }
+        break
+      end
+    end
+  else
+    for index = 1, 2 do
+      if state.recommendations[index] then
+        display[index] = {
+          spellID = state.recommendations[index],
+          active = false,
+        }
+      end
+    end
+  end
+
+  for index = 1, 2 do
+    local row = display[index]
     local button = ui.recommendations[index]
 
-    if recommendation then
-      button.icon:SetTexture(GetSpellTexture(recommendation))
+    if row and row.spellID then
+      button.icon:SetTexture(row.texture or GetSpellTexture(row.spellID))
       button.icon:Show()
-      button.text:SetText(GetSpellInfo(recommendation) or "")
+      button.text:SetText(GetSpellInfo(row.spellID) or "")
       button.text:Show()
+      if row.active then
+        local r, g, b = 0.16, 0.78, 0.42
+        if not row.matched then
+          r, g, b = 0.90, 0.22, 0.18
+        end
+        button.progress:SetColorTexture(r, g, b, 0.58)
+        button.progress:SetWidth(math.max(1, layout.recommendationWidth * (row.progress or 0)))
+        button.progress:Show()
+      else
+        button.progress:Hide()
+      end
       button:Show()
     else
       button:Hide()
@@ -394,6 +598,10 @@ local function updateTimers()
 
   ui.leftTime:SetText(formatRemaining(state.fireExpires))
   ui.rightTime:SetText(formatRemaining(state.shadowExpires))
+  if BigMeteorDB and state.targetExists and not state.targetDead then
+    state.recommendations = buildRecommendations()
+  end
+  updateBars()
 end
 
 local function refreshState()
@@ -421,6 +629,23 @@ local function refreshState()
   end
 
   updateBars()
+end
+
+local function clearActiveCast()
+  state.activeCastSpell = nil
+  state.activeCastRecommended = nil
+  state.activeCastMatched = false
+end
+
+local function captureActiveCast(...)
+  local spellID = findKnownSpellIDInArgs(...)
+  if not spellID then
+    spellID = select(1, getPlayerCastInfo())
+  end
+
+  state.activeCastSpell = spellID
+  state.activeCastRecommended = state.recommendations and state.recommendations[1] or nil
+  state.activeCastMatched = spellID ~= nil and spellID == state.activeCastRecommended
 end
 
 local function savePosition()
@@ -467,7 +692,7 @@ end
 
 local function createStackColumn(parent, anchorPoint, relativeTo, relativePoint, xOffset, yOffset)
   local frame = CreateFrame("Frame", nil, parent, "BackdropTemplate")
-  frame:SetSize(60, 156)
+  frame:SetSize(layout.stackWidth, layout.barHeight)
   frame:SetPoint(anchorPoint, relativeTo, relativePoint, xOffset, yOffset)
   frame:SetBackdrop({
     bgFile = "Interface\\Buttons\\WHITE8X8",
@@ -479,8 +704,8 @@ local function createStackColumn(parent, anchorPoint, relativeTo, relativePoint,
   local stacks = {}
   for index = 1, stackMax do
     local bar = frame:CreateTexture(nil, "ARTWORK")
-    bar:SetSize(42, 20)
-    bar:SetPoint("BOTTOM", 0, 8 + (index - 1) * 24)
+    bar:SetSize(layout.stackWidth - 8, 16)
+    bar:SetPoint("BOTTOM", 0, 6 + (index - 1) * 21)
     stacks[index] = bar
   end
 
@@ -489,7 +714,7 @@ end
 
 local function createUI()
   local frame = CreateFrame("Button", "BigMeteorFrame", UIParent, "BackdropTemplate")
-  frame:SetSize(278, 174)
+  frame:SetSize(layout.frameWidth, 154)
   frame:SetMovable(true)
   frame:EnableMouse(true)
   frame:RegisterForDrag("LeftButton")
@@ -519,19 +744,19 @@ local function createUI()
     updateTimers()
   end)
 
-  local leftColumn, leftStacks = createStackColumn(frame, "LEFT", frame, "LEFT", 12, 0)
-  local rightColumn, rightStacks = createStackColumn(frame, "LEFT", leftColumn, "RIGHT", 6, 0)
+  local leftColumn, leftStacks = createStackColumn(frame, "LEFT", frame, "LEFT", layout.panelPadding, 0)
+  local rightColumn, rightStacks = createStackColumn(frame, "LEFT", leftColumn, "RIGHT", layout.gap, 0)
 
   local leftTime = leftColumn:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
   leftTime:SetPoint("CENTER", leftColumn, "CENTER", 0, 0)
-  leftTime:SetWidth(52)
+  leftTime:SetWidth(layout.stackWidth + 18)
   leftTime:SetJustifyH("CENTER")
   leftTime:SetText("")
   leftTime:SetTextColor(1.0, 0.95, 0.95)
 
   local rightTime = rightColumn:CreateFontString(nil, "OVERLAY", "GameFontHighlightLarge")
   rightTime:SetPoint("CENTER", rightColumn, "CENTER", 0, 0)
-  rightTime:SetWidth(52)
+  rightTime:SetWidth(layout.stackWidth + 18)
   rightTime:SetJustifyH("CENTER")
   rightTime:SetText("")
   rightTime:SetTextColor(0.95, 0.9, 1.0)
@@ -543,17 +768,46 @@ local function createUI()
   debugText:SetText("")
   debugText:SetTextColor(0.9, 0.9, 0.9)
 
+  local shadowburnCooldown = CreateFrame("Frame", nil, frame, "BackdropTemplate")
+  shadowburnCooldown:SetSize(layout.cooldownWidth, layout.barHeight)
+  shadowburnCooldown:SetPoint("LEFT", rightColumn, "RIGHT", layout.gap, 0)
+  shadowburnCooldown:SetBackdrop({
+    bgFile = "Interface\\Buttons\\WHITE8X8",
+    insets = { left = 0, right = 0, top = 0, bottom = 0 },
+  })
+  shadowburnCooldown:SetBackdropColor(0.03, 0.03, 0.04, 0.68)
+  addFlatBorder(shadowburnCooldown, 0.42, 0.44, 0.48, 0.75)
+
+  local shadowburnCooldownFill = shadowburnCooldown:CreateTexture(nil, "ARTWORK")
+  shadowburnCooldownFill:SetPoint("BOTTOMLEFT", 4, 4)
+  shadowburnCooldownFill:SetPoint("BOTTOMRIGHT", -4, 4)
+  shadowburnCooldownFill:SetColorTexture(0.84, 0.36, 1.0, 0.85)
+  shadowburnCooldownFill:SetHeight(0)
+
+  local shadowburnCooldownText = shadowburnCooldown:CreateFontString(nil, "OVERLAY", "GameFontHighlightSmall")
+  shadowburnCooldownText:SetPoint("CENTER", shadowburnCooldown, "CENTER", 0, 0)
+  shadowburnCooldownText:SetWidth(layout.cooldownWidth + 20)
+  shadowburnCooldownText:SetJustifyH("CENTER")
+  shadowburnCooldownText:SetText("")
+
   local recommendations = {}
-  for index = 1, 3 do
+  for index = 1, 2 do
     local button = CreateFrame("Frame", nil, frame, "BackdropTemplate")
-    button:SetSize(104, 40)
-    button:SetPoint("TOPRIGHT", frame, "TOPRIGHT", -12, -19 - (index - 1) * 47)
+    button:SetSize(layout.recommendationWidth, layout.recommendationHeight)
+    button:SetPoint("TOPLEFT", shadowburnCooldown, "TOPRIGHT", layout.gap, -(index - 1) * (layout.recommendationHeight + layout.recommendationGap))
     button:SetBackdrop({
       bgFile = "Interface\\Buttons\\WHITE8X8",
       insets = { left = 0, right = 0, top = 0, bottom = 0 },
     })
     button:SetBackdropColor(0.02, 0.02, 0.03, 0.68)
     addFlatBorder(button, 0.42, 0.44, 0.48, 0.75)
+
+    local progress = button:CreateTexture(nil, "BACKGROUND")
+    progress:SetPoint("TOPLEFT", button, "TOPLEFT", 0, 0)
+    progress:SetPoint("BOTTOMLEFT", button, "BOTTOMLEFT", 0, 0)
+    progress:SetWidth(1)
+    progress:Hide()
+    button.progress = progress
 
     local icon = button:CreateTexture(nil, "ARTWORK")
     icon:SetPoint("TOPLEFT", 4, -4)
@@ -575,6 +829,9 @@ local function createUI()
   ui.frame = frame
   ui.leftColumn = leftColumn
   ui.rightColumn = rightColumn
+  ui.shadowburnCooldown = shadowburnCooldown
+  ui.shadowburnCooldownFill = shadowburnCooldownFill
+  ui.shadowburnCooldownText = shadowburnCooldownText
   ui.leftStacks = leftStacks
   ui.rightStacks = rightStacks
   ui.leftTime = leftTime
@@ -586,12 +843,45 @@ local function createUI()
   updateBars()
 end
 
-addon:SetScript("OnEvent", function(_, event, arg1)
+addon:SetScript("OnEvent", function(_, event, arg1, ...)
   if event == "ADDON_LOADED" and arg1 == ADDON_NAME then
     BigMeteorDB = copyDefaults(defaults, BigMeteorDB or {})
     applyFixedAuraConfig(BigMeteorDB)
     createUI()
     refreshState()
+    return
+  end
+
+  if event == "UNIT_SPELLCAST_SUCCEEDED" then
+    local unit = arg1
+    if unit == "player" then
+      local spellID = findKnownSpellIDInArgs(...)
+      if spellID == BigMeteorDB.spellIDs.shadowburn then
+        state.lastShadowburnCast = GetTime()
+        state.shadowStacksAfterShadowburn = math.min(stackMax, state.shadowStacks + shadowburnStacks)
+      end
+    end
+    refreshState()
+    return
+  end
+
+  if event == "UNIT_SPELLCAST_START" or event == "UNIT_SPELLCAST_CHANNEL_START" then
+    if arg1 == "player" then
+      captureActiveCast(...)
+      updateBars()
+    end
+    return
+  end
+
+  if event == "UNIT_SPELLCAST_STOP"
+    or event == "UNIT_SPELLCAST_CHANNEL_STOP"
+    or event == "UNIT_SPELLCAST_FAILED"
+    or event == "UNIT_SPELLCAST_INTERRUPTED"
+  then
+    if arg1 == "player" then
+      clearActiveCast()
+      refreshState()
+    end
     return
   end
 
@@ -606,3 +896,10 @@ addon:RegisterEvent("ADDON_LOADED")
 addon:RegisterEvent("PLAYER_ENTERING_WORLD")
 addon:RegisterEvent("PLAYER_TARGET_CHANGED")
 addon:RegisterEvent("UNIT_AURA")
+addon:RegisterEvent("UNIT_SPELLCAST_SUCCEEDED")
+addon:RegisterEvent("UNIT_SPELLCAST_START")
+addon:RegisterEvent("UNIT_SPELLCAST_STOP")
+addon:RegisterEvent("UNIT_SPELLCAST_FAILED")
+addon:RegisterEvent("UNIT_SPELLCAST_INTERRUPTED")
+addon:RegisterEvent("UNIT_SPELLCAST_CHANNEL_START")
+addon:RegisterEvent("UNIT_SPELLCAST_CHANNEL_STOP")

@@ -77,11 +77,13 @@ local state = {
   immolateExpires = 0,
   shadowflameExpires = 0,
   lastShadowburnCast = 0,
+  pendingShadowburnCast = 0,
   lastConflagrateCast = 0,
   shadowStacksAfterShadowburn = 0,
   activeCastSpell = nil,
   activeCastName = nil,
   activeCastRecommended = nil,
+  lockedNextRecommendation = nil,
   activeCastMatched = false,
   recommendations = {},
   debugLines = {},
@@ -91,7 +93,7 @@ local ui = {}
 local stackMax = 6
 local meteorChainPadding = 0.5
 local conflagrateBuffSeconds = 6
-local immolateRefreshPadding = 0.2
+local immolateRefreshPadding = 0.6
 local windowSafetyPadding = 0.15
 local shadowburnStacks = 2
 local shadowflameFireStacks = 2
@@ -427,6 +429,7 @@ local function buildCombatContext()
   ctx.incinerateSeconds = getSpellActionSeconds(spellIDs.incinerate, ctx, 1.5)
   ctx.shadowBoltSeconds = getSpellActionSeconds(spellIDs.shadowBolt, ctx, 1.5)
   ctx.recentlyCastShadowburn = GetTime() - (state.lastShadowburnCast or 0) <= (ctx.meteorCastSeconds + ctx.gcdSeconds + meteorChainPadding)
+    or isPendingShadowburnCast()
   ctx.conflagrateBuffRemaining = math.max(0, conflagrateBuffSeconds - (GetTime() - (state.lastConflagrateCast or 0)))
 
   return ctx
@@ -490,7 +493,90 @@ local function chainMeteorAfterShadowburn(list, ctx)
   return true
 end
 
-local function canStartShadowburnMeteorWindow(ctx)
+local function markShadowburnCast()
+  state.lastShadowburnCast = GetTime()
+  state.pendingShadowburnCast = 0
+  state.shadowStacksAfterShadowburn = math.min(stackMax, state.shadowStacks + shadowburnStacks)
+end
+
+local function markPendingShadowburnCast()
+  state.pendingShadowburnCast = GetTime()
+end
+
+local function isPendingShadowburnCast()
+  return state.pendingShadowburnCast and state.pendingShadowburnCast > 0 and GetTime() - state.pendingShadowburnCast <= 3
+end
+
+local function findNextRecommendationAfter(spellID, spellName)
+  for _, recommendation in ipairs(state.recommendations or {}) do
+    if not isSpellSameAsCast(recommendation, spellID, spellName) then
+      return recommendation
+    end
+  end
+
+  return nil
+end
+
+local function shouldReplaceLockedNext(lockedSpellID, newSpellID)
+  if not lockedSpellID or not newSpellID or lockedSpellID == newSpellID then
+    return false
+  end
+
+  local spellIDs = BigMeteorDB and BigMeteorDB.spellIDs
+  if not spellIDs then
+    return false
+  end
+
+  return newSpellID == spellIDs.meteor
+    or newSpellID == spellIDs.shadowburn
+    or newSpellID == spellIDs.conflagrate and lockedSpellID ~= spellIDs.meteor
+    or newSpellID == spellIDs.immolate and lockedSpellID ~= spellIDs.meteor and lockedSpellID ~= spellIDs.shadowburn
+end
+
+local canStartShadowburnMeteorWindow
+
+local function predictNextAfterCast(spellID, spellName)
+  local spellIDs = BigMeteorDB and BigMeteorDB.spellIDs
+  if not spellIDs then
+    return nil
+  end
+
+  if isSpellSameAsCast(spellIDs.shadowburn, spellID, spellName) then
+    local ctx = buildCombatContext()
+    if canCastConflagrateBeforeMeteor(ctx) then
+      return spellIDs.conflagrate
+    end
+    return spellIDs.meteor
+  end
+
+  if isSpellSameAsCast(spellIDs.conflagrate, spellID, spellName) then
+    if state.activeCastRecommended == spellIDs.conflagrate and state.recommendations and state.recommendations[2] then
+      return state.recommendations[2]
+    end
+    if canStartShadowburnMeteorWindow(buildCombatContext()) then
+      return spellIDs.shadowburn
+    end
+    return spellIDs.chaosBolt
+  end
+
+  if isSpellSameAsCast(spellIDs.meteor, spellID, spellName) then
+    return spellIDs.chaosBolt
+  end
+
+  if isSpellSameAsCast(spellIDs.immolate, spellID, spellName) then
+    return spellIDs.conflagrate
+  end
+
+  if isSpellSameAsCast(spellIDs.shadowflame, spellID, spellName) then
+    if canStartShadowburnMeteorWindow(buildCombatContext()) then
+      return spellIDs.shadowburn
+    end
+  end
+
+  return findNextRecommendationAfter(spellID, spellName)
+end
+
+canStartShadowburnMeteorWindow = function(ctx)
   local impactDelay = ctx.gcdSeconds + ctx.meteorCastSeconds
 
   return ctx.shadowburnReady
@@ -739,14 +825,18 @@ local function updateBars()
       progress = activeCastProgress,
     }
 
-    for _, recommendation in ipairs(state.recommendations) do
-      if not isSpellSameAsCast(recommendation, activeSpellID, activeSpellName) then
-        display[2] = {
-          spellID = recommendation,
-          active = false,
-        }
-        break
-      end
+    local nextRecommendation = findNextRecommendationAfter(activeSpellID, activeSpellName)
+    if state.lockedNextRecommendation and not shouldReplaceLockedNext(state.lockedNextRecommendation, nextRecommendation) then
+      nextRecommendation = state.lockedNextRecommendation
+    elseif nextRecommendation then
+      state.lockedNextRecommendation = nextRecommendation
+    end
+
+    if nextRecommendation then
+      display[2] = {
+        spellID = nextRecommendation,
+        active = false,
+      }
     end
   else
     for index = 1, 2 do
@@ -831,6 +921,7 @@ local function clearActiveCast()
   state.activeCastSpell = nil
   state.activeCastName = nil
   state.activeCastRecommended = nil
+  state.lockedNextRecommendation = nil
   state.activeCastMatched = false
 end
 
@@ -844,7 +935,12 @@ local function captureActiveCast(...)
   state.activeCastSpell = spellID
   state.activeCastName = spellName
   state.activeCastRecommended = state.recommendations and state.recommendations[1] or nil
+  state.lockedNextRecommendation = predictNextAfterCast(spellID, spellName)
   state.activeCastMatched = isSpellSameAsCast(state.activeCastRecommended, spellID, spellName)
+
+  if isSpellSameAsCast(BigMeteorDB.spellIDs.shadowburn, spellID, spellName) then
+    markPendingShadowburnCast()
+  end
 end
 
 local function savePosition()
@@ -1055,9 +1151,8 @@ addon:SetScript("OnEvent", function(_, event, arg1, ...)
     local unit = arg1
     if unit == "player" then
       local spellID = findKnownSpellIDInArgs(...)
-      if spellID == BigMeteorDB.spellIDs.shadowburn then
-        state.lastShadowburnCast = GetTime()
-        state.shadowStacksAfterShadowburn = math.min(stackMax, state.shadowStacks + shadowburnStacks)
+      if isSpellSameAsCast(BigMeteorDB.spellIDs.shadowburn, spellID, state.activeCastName) or isPendingShadowburnCast() then
+        markShadowburnCast()
       elseif spellID == BigMeteorDB.spellIDs.conflagrate then
         state.lastConflagrateCast = GetTime()
       end
@@ -1080,6 +1175,9 @@ addon:SetScript("OnEvent", function(_, event, arg1, ...)
     or event == "UNIT_SPELLCAST_INTERRUPTED"
   then
     if arg1 == "player" then
+      if event == "UNIT_SPELLCAST_STOP" and isSpellSameAsCast(BigMeteorDB.spellIDs.shadowburn, state.activeCastSpell, state.activeCastName) then
+        markShadowburnCast()
+      end
       clearActiveCast()
       refreshState()
     end

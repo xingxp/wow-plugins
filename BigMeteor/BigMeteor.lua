@@ -77,8 +77,10 @@ local state = {
   immolateExpires = 0,
   shadowflameExpires = 0,
   lastShadowburnCast = 0,
+  lastConflagrateCast = 0,
   shadowStacksAfterShadowburn = 0,
   activeCastSpell = nil,
+  activeCastName = nil,
   activeCastRecommended = nil,
   activeCastMatched = false,
   recommendations = {},
@@ -88,6 +90,9 @@ local state = {
 local ui = {}
 local stackMax = 6
 local meteorChainPadding = 0.5
+local conflagrateBuffSeconds = 6
+local immolateRefreshPadding = 0.2
+local windowSafetyPadding = 0.15
 local shadowburnStacks = 2
 local shadowflameFireStacks = 2
 local shadowflameShadowStacks = 2
@@ -298,6 +303,24 @@ local function addRecommendation(list, spellID)
   list[#list + 1] = spellID
 end
 
+local function addForcedRecommendation(list, spellID)
+  if not spellID or spellID == 0 or #list >= 2 then
+    return
+  end
+
+  if not GetSpellTexture(spellID) then
+    return
+  end
+
+  for _, existing in ipairs(list) do
+    if isRecommendationSame(existing, spellID) then
+      return
+    end
+  end
+
+  list[#list + 1] = spellID
+end
+
 local function getKnownSpellIDByName(spellName)
   if not spellName or not BigMeteorDB or not BigMeteorDB.spellIDs then
     return nil
@@ -339,127 +362,299 @@ end
 local function getPlayerCastInfo()
   local name, _, texture, startMS, endMS, _, _, _, spellID = UnitCastingInfo("player")
   if name then
-    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000
+    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000, name
   end
 
   name, _, texture, startMS, endMS, _, _, spellID = UnitChannelInfo("player")
   if name then
-    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000
+    return spellID or getKnownSpellIDByName(name), texture, startMS / 1000, endMS / 1000, name
   end
 
-  return nil, nil, 0, 0
+  return nil, nil, 0, 0, nil
+end
+
+local function isSpellSameAsCast(spellID, castSpellID, castName)
+  if spellID and castSpellID and spellID == castSpellID then
+    return true
+  end
+
+  if spellID and castName and GetSpellInfo(spellID) == castName then
+    return true
+  end
+
+  return false
+end
+
+local function getSpellActionSeconds(spellID, ctx, fallback)
+  local castMS = select(4, GetSpellInfo(spellID))
+  if castMS and castMS > 0 then
+    return castMS / 1000
+  end
+
+  return (ctx and ctx.gcdSeconds) or fallback or 1.5
+end
+
+local function getHastedCastSeconds(baseSeconds)
+  local haste = UnitSpellHaste("player") or 0
+  return baseSeconds / (1 + haste / 100)
+end
+
+local function buildCombatContext()
+  local spellIDs = BigMeteorDB.spellIDs
+  local ctx = {
+    spellIDs = spellIDs,
+    gcdSeconds = getGCDSeconds(),
+    fireRemaining = getRemaining(state.fireExpires),
+    shadowRemaining = getRemaining(state.shadowExpires),
+    shadowflameRemaining = getRemaining(state.shadowflameExpires),
+    immolateRemaining = getRemaining(state.immolateExpires),
+    shadowburnReady = isSpellReady(spellIDs.shadowburn),
+    shadowburnRemaining = getSpellCooldownRemaining(spellIDs.shadowburn),
+    conflagrateReady = isSpellReady(spellIDs.conflagrate),
+    conflagrateRemaining = getSpellCooldownRemaining(spellIDs.conflagrate),
+    shadowflameInRange = isSpellInRange(spellIDs.shadowflame, "target"),
+    shadowflameReady = isSpellReady(spellIDs.shadowflame) and isSpellInRange(spellIDs.shadowflame, "target"),
+    meteorReady = isSpellReady(spellIDs.meteor),
+    chaosBoltReady = isSpellReady(spellIDs.chaosBolt),
+  }
+
+  ctx.hasImmolate = ctx.immolateRemaining > 0
+  ctx.immolateCastSeconds = getHastedCastSeconds(1.5)
+  ctx.immolateRefreshThreshold = ctx.immolateCastSeconds + immolateRefreshPadding
+  ctx.immolateRefreshNeeded = ctx.immolateRemaining <= ctx.immolateRefreshThreshold
+  ctx.meteorCastSeconds = getSpellActionSeconds(spellIDs.meteor, ctx, 1.5)
+  ctx.chaosBoltSeconds = getSpellActionSeconds(spellIDs.chaosBolt, ctx, 1.5)
+  ctx.incinerateSeconds = getSpellActionSeconds(spellIDs.incinerate, ctx, 1.5)
+  ctx.shadowBoltSeconds = getSpellActionSeconds(spellIDs.shadowBolt, ctx, 1.5)
+  ctx.recentlyCastShadowburn = GetTime() - (state.lastShadowburnCast or 0) <= (ctx.meteorCastSeconds + ctx.gcdSeconds + meteorChainPadding)
+  ctx.conflagrateBuffRemaining = math.max(0, conflagrateBuffSeconds - (GetTime() - (state.lastConflagrateCast or 0)))
+
+  return ctx
+end
+
+local function fireHoldsUntil(ctx, delay)
+  return state.fireStacks >= stackMax and ctx.fireRemaining >= delay
+end
+
+local function shadowHoldsForMeteor(ctx, shadowStacks, delay)
+  local predictedStacks = shadowStacks
+  if ctx.shadowflameRemaining >= delay then
+    predictedStacks = predictedStacks + shadowflameTickShadowStacks
+  end
+
+  return predictedStacks >= stackMax
+end
+
+local function canMeteorLandAfterShadowburn(ctx, extraDelay)
+  local impactDelay = (extraDelay or 0) + ctx.meteorCastSeconds
+  local shadowStacks = state.shadowStacks
+  if ctx.recentlyCastShadowburn then
+    shadowStacks = math.max(shadowStacks, state.shadowStacksAfterShadowburn or 0)
+  end
+
+  return ctx.meteorReady
+    and fireHoldsUntil(ctx, impactDelay)
+    and shadowHoldsForMeteor(ctx, shadowStacks, impactDelay)
+end
+
+local function meteorLandsInConflagrateWindow(ctx, extraDelay)
+  local impactDelay = (extraDelay or 0) + ctx.meteorCastSeconds
+  return ctx.conflagrateBuffRemaining >= impactDelay
+end
+
+local function canCastConflagrateBeforeMeteor(ctx)
+  return ctx.conflagrateReady
+    and ctx.hasImmolate
+    and canMeteorLandAfterShadowburn(ctx, ctx.gcdSeconds)
+end
+
+local function chainMeteorAfterShadowburn(list, ctx)
+  local spellIDs = ctx.spellIDs
+
+  if canCastConflagrateBeforeMeteor(ctx) then
+    addRecommendation(list, spellIDs.conflagrate)
+    addRecommendation(list, spellIDs.meteor)
+    return true
+  end
+
+  if ctx.conflagrateRemaining > 0
+    and ctx.conflagrateRemaining <= ctx.gcdSeconds
+    and canMeteorLandAfterShadowburn(ctx, ctx.conflagrateRemaining + ctx.gcdSeconds)
+  then
+    addRecommendation(list, spellIDs.lifeTap)
+    addRecommendation(list, spellIDs.meteor)
+    return true
+  end
+
+  addForcedRecommendation(list, spellIDs.meteor)
+  return true
+end
+
+local function canStartShadowburnMeteorWindow(ctx)
+  local impactDelay = ctx.gcdSeconds + ctx.meteorCastSeconds
+
+  return ctx.shadowburnReady
+    and ctx.meteorReady
+    and fireHoldsUntil(ctx, impactDelay)
+    and shadowHoldsForMeteor(ctx, state.shadowStacks + shadowburnStacks, impactDelay)
+end
+
+local function shadowflameCanPrepareMeteorWindow(ctx)
+  if not ctx.shadowflameReady then
+    return false
+  end
+
+  local fireStacksAfter = math.min(stackMax, state.fireStacks + shadowflameFireStacks)
+  local shadowStacksAfter = math.min(stackMax, state.shadowStacks + shadowflameShadowStacks)
+  return fireStacksAfter >= stackMax
+    and shadowStacksAfter >= stackMax
+    and ctx.shadowburnReady
+    and ctx.meteorReady
+end
+
+local function nextShadowburnWindowSoon(ctx)
+  if ctx.shadowburnReady or ctx.shadowburnRemaining <= 0 then
+    return false
+  end
+
+  return ctx.meteorReady
+    and state.fireStacks >= stackMax
+    and (
+      state.shadowStacks + shadowburnStacks >= stackMax
+      or shadowHoldsForMeteor(ctx, state.shadowStacks + shadowburnStacks, ctx.shadowburnRemaining + ctx.gcdSeconds + ctx.meteorCastSeconds)
+    )
+end
+
+local function castFitsBeforeShadowburn(ctx, actionSeconds)
+  if ctx.shadowburnReady or ctx.shadowburnRemaining <= 0 then
+    return true
+  end
+
+  return actionSeconds + windowSafetyPadding < ctx.shadowburnRemaining
+end
+
+local function recommendLayerBuilder(list, ctx)
+  local spellIDs = ctx.spellIDs
+
+  if state.shadowStacks < stackMax - 1 then
+    if ctx.shadowflameInRange then
+      addRecommendation(list, spellIDs.shadowflame)
+    else
+      addRecommendation(list, spellIDs.shadowBolt)
+    end
+    return
+  end
+
+  if state.fireStacks < stackMax then
+    addRecommendation(list, spellIDs.incinerate)
+    return
+  end
+
+  if state.shadowStacks < stackMax then
+    if ctx.shadowflameInRange then
+      addRecommendation(list, spellIDs.shadowflame)
+    else
+      addRecommendation(list, spellIDs.shadowBolt)
+    end
+  end
 end
 
 local function buildRecommendations()
-  local spellIDs = BigMeteorDB.spellIDs
+  local ctx = buildCombatContext()
+  local spellIDs = ctx.spellIDs
   local list = {}
 
   if not state.targetExists or state.targetDead then
     return list
   end
 
-  local shadowburnReady = isSpellReady(spellIDs.shadowburn)
-  local shadowburnRemaining = getSpellCooldownRemaining(spellIDs.shadowburn)
-  local conflagrateReady = isSpellReady(spellIDs.conflagrate)
-  local conflagrateRemaining = getSpellCooldownRemaining(spellIDs.conflagrate)
-  local shadowflameInRange = isSpellInRange(spellIDs.shadowflame, "target")
-  local shadowflameReady = isSpellReady(spellIDs.shadowflame) and shadowflameInRange
-  local meteorReady = isSpellReady(spellIDs.meteor)
-  local hasImmolate = getRemaining(state.immolateExpires) > 0
-  local fireRemaining = getRemaining(state.fireExpires)
-  local shadowflameRemaining = getRemaining(state.shadowflameExpires)
-  local immolateRefreshSeconds = getSpellCastSeconds(spellIDs.immolate, 1.5)
-  local immolateRefreshNeeded = getRemaining(state.immolateExpires) <= immolateRefreshSeconds
-  local meteorCastSeconds = getSpellCastSeconds(spellIDs.meteor, 1.5)
-  local gcdSeconds = getGCDSeconds()
-  local chaosBoltSeconds = getSpellCastSeconds(spellIDs.chaosBolt, 1.5)
-  local recentlyCastShadowburn = GetTime() - (state.lastShadowburnCast or 0) <= (meteorCastSeconds + gcdSeconds + meteorChainPadding)
-  local shadowStacksForMeteor = state.shadowStacks
-  if recentlyCastShadowburn then
-    shadowStacksForMeteor = math.max(shadowStacksForMeteor, state.shadowStacksAfterShadowburn or 0)
-  end
-  local fireReady = state.fireStacks >= stackMax
-  local shadowReadyForMeteor = state.shadowStacks >= stackMax
-    or shadowStacksForMeteor >= stackMax
-    or shadowStacksForMeteor + shadowflameTickShadowStacks >= stackMax
-      and shadowflameRemaining >= meteorCastSeconds
-  local nearShadowburnMeteorWindow = fireReady
-    and meteorReady
-    and not shadowburnReady
-    and shadowburnRemaining > gcdSeconds
-    and shadowburnRemaining < chaosBoltSeconds
-    and (
-      state.shadowStacks + shadowburnStacks >= stackMax
-      or state.shadowStacks + shadowburnStacks + shadowflameTickShadowStacks >= stackMax
-        and shadowflameRemaining >= meteorCastSeconds
-    )
-  local shadowburnCanFinish = fireReady
-    and (
-      state.shadowStacks + shadowburnStacks >= stackMax
-      or state.shadowStacks + shadowburnStacks + shadowflameTickShadowStacks >= stackMax
-        and shadowflameRemaining >= meteorCastSeconds
-    )
-  local shadowflameFireStacksAfter = math.min(stackMax, state.fireStacks + shadowflameFireStacks)
-  local shadowflameShadowStacksAfter = math.min(stackMax, state.shadowStacks + shadowflameShadowStacks)
-  local shadowflameCanSetUpMeteor = shadowflameReady
-    and meteorReady
-    and shadowflameFireStacksAfter >= stackMax
-    and shadowflameShadowStacksAfter >= stackMax
-  local shadowburnSetupReady = shadowburnReady and meteorReady and shadowburnCanFinish
-
-  if recentlyCastShadowburn and fireReady and meteorReady and shadowReadyForMeteor then
-    addRecommendation(list, spellIDs.meteor)
+  if ctx.recentlyCastShadowburn then
+    chainMeteorAfterShadowburn(list, ctx)
     return list
   end
 
-  if shadowburnSetupReady then
+  if canStartShadowburnMeteorWindow(ctx) then
+    if ctx.hasImmolate
+      and ctx.conflagrateReady
+      and fireHoldsUntil(ctx, ctx.gcdSeconds + ctx.gcdSeconds + ctx.meteorCastSeconds)
+    then
+      addRecommendation(list, spellIDs.conflagrate)
+      addRecommendation(list, spellIDs.shadowburn)
+      return list
+    end
+
+    if ctx.hasImmolate
+      and not meteorLandsInConflagrateWindow(ctx, ctx.gcdSeconds)
+      and ctx.conflagrateRemaining > 0
+      and ctx.conflagrateRemaining <= ctx.gcdSeconds
+      and fireHoldsUntil(ctx, ctx.conflagrateRemaining + ctx.gcdSeconds + ctx.gcdSeconds + ctx.meteorCastSeconds)
+    then
+      addRecommendation(list, spellIDs.lifeTap)
+      addRecommendation(list, spellIDs.conflagrate)
+      return list
+    end
+
     addRecommendation(list, spellIDs.shadowburn)
     addRecommendation(list, spellIDs.meteor)
     return list
   end
 
-  if nearShadowburnMeteorWindow then
+  if nextShadowburnWindowSoon(ctx) and not castFitsBeforeShadowburn(ctx, math.min(ctx.chaosBoltSeconds, ctx.incinerateSeconds, ctx.shadowBoltSeconds)) then
     addRecommendation(list, spellIDs.lifeTap)
     return list
   end
 
-  if hasImmolate then
-    addRecommendation(list, spellIDs.conflagrate)
-    if conflagrateReady or conflagrateRemaining <= 0 or conflagrateRemaining > chaosBoltSeconds then
-      addRecommendation(list, spellIDs.chaosBolt)
+  if ctx.immolateRefreshNeeded
+    and (
+      not canStartShadowburnMeteorWindow(ctx)
+      or ctx.immolateRemaining <= ctx.immolateCastSeconds
+    )
+  then
+    addRecommendation(list, spellIDs.immolate)
+    if ctx.hasImmolate and ctx.conflagrateReady then
+      addRecommendation(list, spellIDs.conflagrate)
     end
-  else
-    addRecommendation(list, spellIDs.chaosBolt)
-  end
-
-  if shadowflameCanSetUpMeteor then
-    addRecommendation(list, spellIDs.shadowflame)
     return list
   end
 
-  if state.shadowStacks < stackMax - 1 then
-    if shadowflameInRange then
-      addRecommendation(list, spellIDs.shadowflame)
-    else
-      addRecommendation(list, spellIDs.shadowBolt)
+  if ctx.immolateRefreshNeeded and castFitsBeforeShadowburn(ctx, ctx.immolateCastSeconds) then
+    addRecommendation(list, spellIDs.immolate)
+    if ctx.hasImmolate then
+      addRecommendation(list, spellIDs.conflagrate)
     end
+    return list
   end
 
-  if immolateRefreshNeeded then
+  if ctx.hasImmolate and ctx.conflagrateReady and castFitsBeforeShadowburn(ctx, ctx.gcdSeconds) then
+    addRecommendation(list, spellIDs.conflagrate)
+    addRecommendation(list, spellIDs.chaosBolt)
+    return list
+  end
+
+  if ctx.chaosBoltReady and castFitsBeforeShadowburn(ctx, ctx.chaosBoltSeconds) then
+    addRecommendation(list, spellIDs.chaosBolt)
+    recommendLayerBuilder(list, ctx)
+    return list
+  end
+
+  if shadowflameCanPrepareMeteorWindow(ctx) and castFitsBeforeShadowburn(ctx, ctx.gcdSeconds) then
+    addRecommendation(list, spellIDs.shadowflame)
+    addRecommendation(list, spellIDs.shadowburn)
+    return list
+  end
+
+  recommendLayerBuilder(list, ctx)
+  if #list > 0 then
+    return list
+  end
+
+  if ctx.immolateRefreshNeeded then
     addRecommendation(list, spellIDs.immolate)
     return list
   end
 
-  if state.fireStacks < stackMax then
-    addRecommendation(list, spellIDs.incinerate)
-  end
-
-  if state.shadowStacks < stackMax then
-    if shadowflameInRange then
-      addRecommendation(list, spellIDs.shadowflame)
-    else
-      addRecommendation(list, spellIDs.shadowBolt)
-    end
+  if castFitsBeforeShadowburn(ctx, ctx.shadowBoltSeconds) then
+    addRecommendation(list, spellIDs.shadowBolt)
   end
 
   addRecommendation(list, spellIDs.incinerate)
@@ -527,7 +722,7 @@ local function updateBars()
     ui.shadowburnCooldownText:SetText("")
   end
 
-  local activeSpellID, activeTexture, castStart, castEnd = getPlayerCastInfo()
+  local activeSpellID, activeTexture, castStart, castEnd, activeSpellName = getPlayerCastInfo()
   local activeCastProgress = 0
   if activeSpellID and castEnd > castStart then
     activeCastProgress = math.min(1, math.max(0, (GetTime() - castStart) / (castEnd - castStart)))
@@ -537,6 +732,7 @@ local function updateBars()
   if activeSpellID then
     display[1] = {
       spellID = activeSpellID,
+      spellName = activeSpellName,
       texture = activeTexture,
       active = true,
       matched = state.activeCastMatched,
@@ -544,7 +740,7 @@ local function updateBars()
     }
 
     for _, recommendation in ipairs(state.recommendations) do
-      if recommendation ~= activeSpellID then
+      if not isSpellSameAsCast(recommendation, activeSpellID, activeSpellName) then
         display[2] = {
           spellID = recommendation,
           active = false,
@@ -570,7 +766,7 @@ local function updateBars()
     if row and row.spellID then
       button.icon:SetTexture(row.texture or GetSpellTexture(row.spellID))
       button.icon:Show()
-      button.text:SetText(GetSpellInfo(row.spellID) or "")
+      button.text:SetText(row.spellName or GetSpellInfo(row.spellID) or "")
       button.text:Show()
       if row.active then
         local r, g, b = 0.16, 0.78, 0.42
@@ -633,19 +829,22 @@ end
 
 local function clearActiveCast()
   state.activeCastSpell = nil
+  state.activeCastName = nil
   state.activeCastRecommended = nil
   state.activeCastMatched = false
 end
 
 local function captureActiveCast(...)
   local spellID = findKnownSpellIDInArgs(...)
+  local spellName
   if not spellID then
-    spellID = select(1, getPlayerCastInfo())
+    spellID, _, _, _, spellName = getPlayerCastInfo()
   end
 
   state.activeCastSpell = spellID
+  state.activeCastName = spellName
   state.activeCastRecommended = state.recommendations and state.recommendations[1] or nil
-  state.activeCastMatched = spellID ~= nil and spellID == state.activeCastRecommended
+  state.activeCastMatched = isSpellSameAsCast(state.activeCastRecommended, spellID, spellName)
 end
 
 local function savePosition()
@@ -859,6 +1058,8 @@ addon:SetScript("OnEvent", function(_, event, arg1, ...)
       if spellID == BigMeteorDB.spellIDs.shadowburn then
         state.lastShadowburnCast = GetTime()
         state.shadowStacksAfterShadowburn = math.min(stackMax, state.shadowStacks + shadowburnStacks)
+      elseif spellID == BigMeteorDB.spellIDs.conflagrate then
+        state.lastConflagrateCast = GetTime()
       end
     end
     refreshState()

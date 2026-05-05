@@ -533,6 +533,16 @@ local function shouldReplaceLockedNext(lockedSpellID, newSpellID)
     or newSpellID == spellIDs.immolate and lockedSpellID ~= spellIDs.meteor and lockedSpellID ~= spellIDs.shadowburn
 end
 
+local function addFallbackRecommendation(list, spellIDs)
+  if #list > 0 then
+    return
+  end
+
+  addForcedRecommendation(list, spellIDs.shadowBolt)
+  addForcedRecommendation(list, spellIDs.incinerate)
+  addForcedRecommendation(list, spellIDs.lifeTap)
+end
+
 local canStartShadowburnMeteorWindow
 
 local function predictNextAfterCast(spellID, spellName)
@@ -744,6 +754,7 @@ local function buildRecommendations()
   end
 
   addRecommendation(list, spellIDs.incinerate)
+  addFallbackRecommendation(list, spellIDs)
 
   return list
 end
@@ -825,10 +836,13 @@ local function updateBars()
       progress = activeCastProgress,
     }
 
-    local nextRecommendation = findNextRecommendationAfter(activeSpellID, activeSpellName)
-    if state.lockedNextRecommendation and not shouldReplaceLockedNext(state.lockedNextRecommendation, nextRecommendation) then
-      nextRecommendation = state.lockedNextRecommendation
-    elseif nextRecommendation then
+    local nextRecommendation = state.lockedNextRecommendation
+    local recomputedNext = findNextRecommendationAfter(activeSpellID, activeSpellName)
+    if not nextRecommendation then
+      nextRecommendation = recomputedNext
+      state.lockedNextRecommendation = nextRecommendation
+    elseif shouldReplaceLockedNext(nextRecommendation, recomputedNext) then
+      nextRecommendation = recomputedNext
       state.lockedNextRecommendation = nextRecommendation
     end
 

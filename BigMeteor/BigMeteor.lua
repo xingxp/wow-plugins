@@ -538,12 +538,6 @@ local function addFallbackRecommendation(list, spellIDs)
     return
   end
 
-  addForcedRecommendation(list, spellIDs.shadowburn)
-  addForcedRecommendation(list, spellIDs.meteor)
-  if #list > 0 then
-    return
-  end
-
   addForcedRecommendation(list, spellIDs.shadowBolt)
   addForcedRecommendation(list, spellIDs.incinerate)
   addForcedRecommendation(list, spellIDs.lifeTap)
@@ -587,53 +581,6 @@ local function predictNextAfterCast(spellID, spellName)
     if canStartShadowburnMeteorWindow(buildCombatContext()) then
       return spellIDs.shadowburn
     end
-  end
-
-  if isSpellSameAsCast(spellIDs.shadowBolt, spellID, spellName) then
-    local ctx = buildCombatContext()
-    if state.fireStacks < stackMax then
-      return spellIDs.incinerate
-    end
-    if ctx.hasImmolate and ctx.conflagrateReady then
-      return spellIDs.conflagrate
-    end
-    if ctx.shadowflameInRange and state.shadowStacks < stackMax then
-      return spellIDs.shadowflame
-    end
-    return spellIDs.incinerate
-  end
-
-  if isSpellSameAsCast(spellIDs.incinerate, spellID, spellName) then
-    local ctx = buildCombatContext()
-    if state.shadowStacks < stackMax - 1 then
-      if ctx.shadowflameInRange then
-        return spellIDs.shadowflame
-      end
-      return spellIDs.shadowBolt
-    end
-    if ctx.hasImmolate and ctx.conflagrateReady then
-      return spellIDs.conflagrate
-    end
-    return spellIDs.shadowBolt
-  end
-
-  if isSpellSameAsCast(spellIDs.conflagrate, spellID, spellName) then
-    local ctx = buildCombatContext()
-    if ctx.recentlyCastShadowburn then
-      return spellIDs.meteor
-    end
-    if state.fireStacks < stackMax then
-      return spellIDs.incinerate
-    end
-    return spellIDs.shadowBolt
-  end
-
-  if isSpellSameAsCast(spellIDs.chaosBolt, spellID, spellName) then
-    local ctx = buildCombatContext()
-    if ctx.hasImmolate and ctx.conflagrateReady then
-      return spellIDs.conflagrate
-    end
-    return spellIDs.shadowBolt
   end
 
   return findNextRecommendationAfter(spellID, spellName)
